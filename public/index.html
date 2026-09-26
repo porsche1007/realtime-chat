@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Realtime Chat</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;min-height:100vh;background:linear-gradient(135deg,#0f172a,#312e81);color:#fff;display:flex;justify-content:center;align-items:center}
+.chat{width:min(1100px,100%);height:min(760px,100vh);background:rgba(15,23,42,.96);border:1px solid rgba(255,255,255,.1);border-radius:24px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 25px 80px rgba(0,0,0,.45)}
+header{padding:18px 22px;display:flex;align-items:center;gap:14px;border-bottom:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.04)}
+.avatar{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#8b5cf6,#06b6d4);font-weight:800}
+.title{flex:1}.title h2{font-size:18px}.status{font-size:12px;color:#4ade80;margin-top:3px}#onlineCount{font-size:12px;opacity:.7}
+.layout{flex:1;display:flex;min-height:0}.main-chat{flex:1;min-width:0;display:flex;flex-direction:column}
+#messages{flex:1;overflow-y:auto;padding:22px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:72%;padding:11px 14px;border-radius:17px;background:#273449;animation:pop .18s ease}.msg.mine{align-self:flex-end;background:linear-gradient(135deg,#7c3aed,#4f46e5);border-bottom-right-radius:5px}.msg:not(.mine){border-bottom-left-radius:5px}
+.name{font-size:11px;opacity:.7;margin-bottom:4px}.text{line-height:1.45;word-break:break-word}.time{font-size:10px;opacity:.55;text-align:right;margin-top:5px}
+.system{align-self:center;font-size:12px;opacity:.6;padding:5px 10px;white-space:pre-line;text-align:center}
+#typing{height:25px;padding:0 22px;font-size:12px;color:#a5b4fc;opacity:0;transition:.2s}#typing.show{opacity:1}
+.input{display:flex;gap:10px;padding:14px;border-top:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.04)}
+input{flex:1;border:0;outline:0;border-radius:25px;padding:14px 17px;background:#1e293b;color:#fff;font-size:14px}
+button{border:0;color:#fff;cursor:pointer}.send-btn{width:50px;height:50px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#4f46e5);font-size:20px}
+#login{position:fixed;inset:0;display:grid;place-items:center;background:#0f172a;z-index:20}
+.login-box{width:min(390px,90%);padding:30px;text-align:center;border-radius:22px;background:#172033;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.login-box h1{margin-bottom:8px}.login-box p{opacity:.65;margin-bottom:20px}.login-box input{width:100%;margin-bottom:12px}.login-box button{width:100%;height:48px;border-radius:14px;font-size:15px;font-weight:700;background:linear-gradient(135deg,#8b5cf6,#4f46e5)}
+#adminBtn{display:none;padding:9px 13px;border-radius:10px;background:#7c3aed;font-weight:bold}
+#adminPanel{display:none;width:330px;background:#111827;border-left:1px solid rgba(255,255,255,.08);overflow-y:auto;padding:18px}
+.admin-title{color:#facc15;font-weight:bold;margin-bottom:15px}.user-card{background:#1e293b;border-radius:12px;padding:12px;margin-bottom:10px}.user-name{font-weight:bold;margin-bottom:5px}.role{font-size:11px;opacity:.7;margin-bottom:10px}
+.admin-actions{display:flex;flex-wrap:wrap;gap:6px}.admin-actions button{padding:7px 9px;border-radius:8px;font-size:11px}
+.kick{background:#dc2626}.mute{background:#d97706}.ban{background:#991b1b}.promote{background:#2563eb}.demote{background:#475569}
+@keyframes pop{from{opacity:0;transform:translateY(5px)}}
+@media(max-width:700px){body{align-items:stretch}.chat{height:100vh;border-radius:0}.msg{max-width:85%}#adminPanel{position:absolute;right:0;top:0;bottom:0;width:290px;z-index:10}}
+</style>
+</head>
+<body>
+<div id="login">
+  <div class="login-box">
+    <h1>💬 Realtime Chat</h1>
+    <p>შეიყვანე სახელი და სურვილის შემთხვევაში Admin Key</p>
+    <input id="nameInput" maxlength="24" placeholder="მაგ. Beqa">
+    <input id="adminKeyInput" type="password" placeholder="🔐 Admin Key">
+    <button id="joinBtn">ჩატში შესვლა</button>
+  </div>
+</div>
+
+<main class="chat">
+<header>
+  <div class="avatar">💬</div>
+  <div class="title"><h2>Realtime Chat</h2><div class="status">● ონლაინ</div></div>
+  <div id="onlineCount">0 online</div>
+  <button id="adminBtn">🛡️ Admin</button>
+</header>
+
+<div class="layout">
+  <div class="main-chat">
+    <section id="messages"></section>
+    <div id="typing"></div>
+    <form class="input" id="form">
+      <input id="messageInput" autocomplete="off" maxlength="1000" placeholder="დაწერე შეტყობინება...">
+      <button class="send-btn" type="submit">➤</button>
+    </form>
+  </div>
+  <aside id="adminPanel">
+    <div class="admin-title">🛡️ ADMIN PANEL</div>
+    <div id="userList"></div>
+  </aside>
+</div>
+</main>
+
+<script>
+const socket=io();
+let myRole="member",typingTimer,currentUsers=[];
+const login=document.getElementById("login"),nameInput=document.getElementById("nameInput"),adminKeyInput=document.getElementById("adminKeyInput"),joinBtn=document.getElementById("joinBtn"),messages=document.getElementById("messages"),form=document.getElementById("form"),input=document.getElementById("messageInput"),typing=document.getElementById("typing"),onlineCount=document.getElementById("onlineCount"),adminBtn=document.getElementById("adminBtn"),adminPanel=document.getElementById("adminPanel"),userList=document.getElementById("userList");
+
+function join(){
+  const username=nameInput.value.trim(),adminKey=adminKeyInput.value.trim();
+  if(!username){alert("შეიყვანე სახელი!");return}
+  socket.emit("join",{username,adminKey});
+}
+joinBtn.onclick=join;
+nameInput.addEventListener("keydown",e=>{if(e.key==="Enter")join()});
+adminKeyInput.addEventListener("keydown",e=>{if(e.key==="Enter")join()});
+
+socket.on("joinError",msg=>alert(msg));
+
+socket.on("role",role=>{
+  myRole=role;
+  login.style.display="none";
+  input.focus();
+  if(role==="admin"||role==="moderator")adminBtn.style.display="block";
+  if(role==="admin")addSystem("🛡️ შენ შესული ხარ როგორც ADMIN!");
+  if(role==="moderator")addSystem("🔵 შენ ხარ MODERATOR!");
+  renderUsers();
+});
+
+socket.on("system",text=>{
+  addSystem(text);
+  if(text.startsWith("კეთილი იყოს შენი მობრძანება")){login.style.display="none";input.focus()}
+});
+
+function addSystem(text){
+  const el=document.createElement("div");el.className="system";el.textContent=text;messages.appendChild(el);scrollBottom();
+}
+
+socket.on("online",users=>onlineCount.textContent=`${users.length} online`);
+
+socket.on("userList",users=>{
+  currentUsers=users;onlineCount.textContent=`${users.length} online`;renderUsers();
+});
+
+function renderUsers(){
+  userList.innerHTML="";
+  if(myRole!=="admin"&&myRole!=="moderator")return;
+  const title=document.createElement("h3");title.textContent="👥 Online Users";title.style.marginBottom="12px";userList.appendChild(title);
+
+  currentUsers.forEach(user=>{
+    const card=document.createElement("div");card.className="user-card";
+    const name=document.createElement("div");name.className="user-name";name.textContent=user.username;
+    const role=document.createElement("div");role.className="role";role.textContent=user.role.toUpperCase();
+    card.append(name,role);
+
+    if(user.id!==socket.id&&myRole==="admin"&&user.role!=="admin"){
+      const actions=document.createElement("div");actions.className="admin-actions";
+
+      const kick=document.createElement("button");kick.className="kick";kick.textContent="Kick";kick.onclick=()=>socket.emit("chatMessage",`/kick ${user.username}`);
+      const mute=document.createElement("button");mute.className="mute";mute.textContent="Mute";mute.onclick=()=>{const s=prompt("რამდენი წამით დავადუმოთ?","60");if(s)socket.emit("chatMessage",`/mute ${user.username} ${s}`)};
+      const ban=document.createElement("button");ban.className="ban";ban.textContent="Ban";ban.onclick=()=>{if(confirm(`${user.username}-ის დაბლოკვა?`))socket.emit("chatMessage",`/ban ${user.username}`)};
+      const promote=document.createElement("button");promote.className="promote";promote.textContent="Promote";promote.onclick=()=>socket.emit("chatMessage",`/promote ${user.username}`);
+      const demote=document.createElement("button");demote.className="demote";demote.textContent="Demote";demote.onclick=()=>socket.emit("chatMessage",`/demote ${user.username}`);
+
+      actions.append(kick,mute,ban,promote,demote);card.appendChild(actions);
+    }
+    userList.appendChild(card);
+  });
+}
+
+adminBtn.onclick=()=>adminPanel.style.display=adminPanel.style.display==="block"?"none":"block";
+
+socket.on("chatMessage",msg=>{
+  const el=document.createElement("div");el.className="msg"+(msg.id===socket.id?" mine":"");
+  const name=document.createElement("div");name.className="name";
+  let badge=msg.role==="admin"?" 🛡️ ADMIN":msg.role==="moderator"?" 🔵 MOD":"";
+  name.textContent=(msg.id===socket.id?"შენ":msg.username)+badge;
+  const text=document.createElement("div");text.className="text";text.textContent=msg.text;
+  const time=document.createElement("div");time.className="time";time.textContent=msg.time;
+  el.append(name,text,time);messages.appendChild(el);scrollBottom();
+});
+
+form.addEventListener("submit",e=>{
+  e.preventDefault();const text=input.value.trim();if(!text)return;
+  socket.emit("chatMessage",text);input.value="";socket.emit("typing",false);
+});
+
+input.addEventListener("input",()=>{
+  socket.emit("typing",true);clearTimeout(typingTimer);
+  typingTimer=setTimeout(()=>socket.emit("typing",false),700);
+});
+
+socket.on("typing",data=>{
+  if(data.isTyping){typing.textContent=`${data.username} წერს...`;typing.classList.add("show")}
+  else typing.classList.remove("show");
+});
+
+socket.on("announcement",data=>addSystem(`📢 ${data.from}: ${data.text}`));
+
+function scrollBottom(){messages.scrollTop=messages.scrollHeight}
+</script>
+</body>
+</html>
